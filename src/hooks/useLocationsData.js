@@ -340,7 +340,7 @@ function readPublicBuilding(row) {
     pick(row, ["Name of public building or public space", "Name", "Site", "id"]) ||
     "Public Building";
 
-  // Yearly presence/capacity column
+  // Yearly presence/capacity column (for popup)
   const wasteRaw =
     pick(row, [
       "Yearly presence/ capacity",
@@ -373,4 +373,77 @@ export function usePublicBuildings(csvUrl) {
     });
   }, [csvUrl]);
   return { points, error };
+}
+
+/* ---------------- Public AOI (2 km circles around public buildings) ---------------- */
+
+/**
+ * Build AOI from public buildings: fixed radius (default 2 km).
+ * Returns center, the FeatureCollection of circles, and a union polygon (or FC fallback).
+ */
+export function usePublicAOI(csvUrl, radiusKm = 2) {
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!csvUrl) return;
+    setLoading(true);
+    setError("");
+    Papa.parse(csvUrl, {
+      download: true,
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => (h ? h.replace(/\uFEFF/g, "").trim() : h),
+      complete: (res) => {
+        const pts = (res.data || []).map(readPublicBuilding).filter(Boolean);
+        if (!pts.length) setError("No valid public building rows (lat/lon).");
+        setRows(pts);
+        setLoading(false);
+      },
+      error: (err) => {
+        setError(err?.message || "Failed to load public buildings CSV");
+        setLoading(false);
+      },
+    });
+  }, [csvUrl]);
+
+  const { center, circlesFC, unionPolygon } = useMemo(() => {
+    if (!rows.length) return { center: null, circlesFC: null, unionPolygon: null };
+
+    const pts = turf.featureCollection(rows.map((r) => turf.point([r.lon, r.lat])));
+    const ctr = turf.center(pts);
+    const [ctrLon, ctrLat] = ctr.geometry.coordinates;
+    const center = [ctrLat, ctrLon];
+
+    const circles = rows.map((r) =>
+      turf.circle([r.lon, r.lat], radiusKm, { units: "kilometers", steps: 64 })
+    );
+    const circlesFC = turf.featureCollection(circles);
+
+    let unioned = null;
+    try {
+      if (circles.length === 1) {
+        unioned = circles[0];
+      } else {
+        const combined = turf.combine(circlesFC);
+        unioned = turf.buffer(combined, 0.0001, { units: "kilometers" });
+        unioned = turf.simplify(unioned, { tolerance: 0.0001, highQuality: false });
+      }
+    } catch {
+      try {
+        unioned = circles[0];
+        for (let i = 1; i < circles.length; i++) {
+          const u = turf.union(unioned, circles[i]);
+          if (u) unioned = u;
+        }
+      } catch {
+        unioned = null;
+      }
+    }
+
+    return { center, circlesFC, unionPolygon: unioned || circlesFC };
+  }, [rows, radiusKm]);
+
+  return { rows, center, circlesFC, unionPolygon, loading, error };
 }

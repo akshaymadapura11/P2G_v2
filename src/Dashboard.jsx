@@ -27,7 +27,9 @@ const DENSITY_KG_PER_L = 1;     // assume ~1 kg/L
 const WHEAT_STANDARD_KG_HA = 160;
 const WHEAT_ORGANIC_KG_HA = 120;
 
-// Custom tooltip for land-use: show % + area
+/* ---------- Tooltips ---------- */
+
+// Land-use: show % + area
 function LanduseTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const p = payload[0]?.payload;
@@ -41,29 +43,30 @@ function LanduseTooltip({ active, payload }) {
   );
 }
 
-// Custom tooltip for wheat charts: show kg + % of requirement
+// Wheat charts: show kg + % of requirement
 function WheatTooltip({ active, payload, requirementKg }) {
   if (!active || !payload?.length) return null;
   const row = payload[0]?.payload;
   if (!row) return null;
-  const name = row.name;
-  const value = row.value || 0;
-  const pct =
-    name.toLowerCase().includes("production")
-      ? (requirementKg > 0 ? (value / requirementKg) * 100 : 0)
-      : 100;
+  const isProd = /production/i.test(row.name);
+  const value = Number(row.value || 0);
+  const pct = isProd ? (requirementKg > 0 ? (value / requirementKg) * 100 : 0) : 100;
   return (
     <div className="card" style={{ padding: 10 }}>
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>{name}</div>
-      <div>Value: <strong>{Number(value).toLocaleString()} kg</strong></div>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>{row.name}</div>
+      <div>Value: <strong>{value.toLocaleString()} kg</strong></div>
       <div>Percent of requirement: <strong>{pct.toFixed(2)}%</strong></div>
     </div>
   );
 }
 
+/* ---------- Component ---------- */
+
 export default function Dashboard({
   radiusKm,
   onRadiusChange,
+  publicRadiusKm,
+  onPublicRadiusChange,
   landuseTypes,
   toggles,
   onToggle,
@@ -75,6 +78,10 @@ export default function Dashboard({
   onToggleWtp,
   showPublic = true,
   onTogglePublic,
+
+  // AOI
+  aoiSource = "wtp",            // "wtp" | "public"
+  onChangeAoiSource = () => {},
 }) {
   // Aggregate visible/toggled area
   const totalAreaM2 = features
@@ -125,7 +132,7 @@ export default function Dashboard({
   const wheatReqStandardKg = farmlandAreaHa * WHEAT_STANDARD_KG_HA;
   const wheatReqOrganicKg  = farmlandAreaHa * WHEAT_ORGANIC_KG_HA;
 
-  // Data rows for wheat charts (two bars: production vs requirement)
+  // Wheat charts (two bars: Production vs Requirement)
   const wheatStandardData = [
     { name: "Production (kg)", value: Math.round(productionKg) },
     { name: "Requirement (kg)", value: Math.round(wheatReqStandardKg) },
@@ -139,7 +146,32 @@ export default function Dashboard({
     <div className="details-pane dashboard-pane">
       <h2>Land Use Dashboard</h2>
 
-      {/* Radius */}
+      {/* AOI source selector */}
+      <div className="card">
+        <h3>Area of Interest</h3>
+        <div className="toggle-list">
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="radio"
+              name="aoi-src"
+              checked={aoiSource === "wtp"}
+              onChange={() => onChangeAoiSource("wtp")}
+            />
+            WTP (uses global radius)
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+            <input
+              type="radio"
+              name="aoi-src"
+              checked={aoiSource === "public"}
+              onChange={() => onChangeAoiSource("public")}
+            />
+            Public buildings (fixed 2 km)
+          </label>
+        </div>
+      </div>
+
+      {/* Radius (disabled when AOI=public) */}
       <div className="card">
         <h3>WTP Radius</h3>
         <div className="radius-input">
@@ -149,9 +181,16 @@ export default function Dashboard({
             min="0"
             step="0.5"
             value={radiusKm}
+            disabled={aoiSource === "public"}
             onChange={(e) => onRadiusChange(Number(e.target.value))}
+            title={aoiSource === "public" ? "AOI is set to Public (fixed 2 km)" : "Edit global WTP radius"}
           />
         </div>
+        {aoiSource === "public" && (
+          <p style={{ marginTop: 8, color: "#777" }}>
+            AOI is <strong>Public buildings</strong>. Radius fixed at <strong>2 km</strong>.
+          </p>
+        )}
       </div>
 
       {/* Summary */}
@@ -275,7 +314,7 @@ export default function Dashboard({
                 {wheatStandardData.map((row, i) => (
                   <Cell
                     key={`ws-cell-${i}`}
-                    fill={row.name.includes("Production") ? "#43A047" : "#757575"}
+                    fill={/production/i.test(row.name) ? "#43A047" : "#757575"}
                   />
                 ))}
               </Bar>
@@ -307,7 +346,7 @@ export default function Dashboard({
                 {wheatOrganicData.map((row, i) => (
                   <Cell
                     key={`wo-cell-${i}`}
-                    fill={row.name.includes("Production") ? "#2E7D32" : "#616161"}
+                    fill={/production/i.test(row.name) ? "#2E7D32" : "#616161"}
                   />
                 ))}
               </Bar>

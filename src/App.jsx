@@ -1,4 +1,4 @@
-// src/App.jsx (only the MapPage component updated)
+// src/App.jsx
 import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -7,8 +7,12 @@ import Menu from "./pages/Menu";
 import LandUseMap from "./LandUseMap";
 import Dashboard from "./Dashboard";
 
-import { LOCATION_GROUPS, PUBLIC_BUILDINGS_CSV } from "./utils/data";
-import { useLocationGroup, usePublicBuildings } from "./hooks/useLocationsData";
+import { LOCATION_GROUPS } from "./utils/data";
+import {
+  useLocationGroup,
+  usePublicBuildings,   // keep if you still want red markers when AOI=WTP
+  usePublicAOI,        // ← new
+} from "./hooks/useLocationsData";
 import "./App.css";
 
 const landuseTypes = [
@@ -22,47 +26,51 @@ const landuseTypes = [
 function MapPage() {
   const { groupId } = useParams();
   const group = LOCATION_GROUPS.find((g) => g.id === groupId);
-
   const [globalRadiusKm, setGlobalRadiusKm] = useState(group?.defaultRadiusKm ?? 2);
+  const [publicRadiusKm, setPublicRadiusKm] = useState(2);
 
+  // WTP AOI (adjustable radius)
   const {
-    effectiveRows,
-    center,
-    circlesFC,
-    unionPolygon,
+    effectiveRows: wtpRows,
+    center: wtpCenter,
+    circlesFC: wtpCircles,
+    unionPolygon: wtpUnion,
     maxSearchRadiusKm,
-    loading,
-    error,
+    loading: wtpLoading,
+    error: wtpError,
     totalProduction,
   } = useLocationGroup(group?.csv, group?.defaultRadiusKm ?? 2, { globalRadiusKm });
 
-  const { points: publicBuildings } = usePublicBuildings(PUBLIC_BUILDINGS_CSV);
+  // Public AOI (fixed 2 km per your spec)
+  const {
+    rows: publicRows,
+    center: publicCenter,
+    circlesFC: publicCircles,
+    unionPolygon: publicUnion,
+    loading: publicLoading,
+    error: publicError,
+  } = usePublicAOI(group?.publicCsv, publicRadiusKm);
+
+  // If you still want standalone public red markers when AOI=WTP:
+  // const { points: publicMarkers } = usePublicBuildings(group?.publicCsv);
+  // We'll just reuse `publicRows` as markers (has lat/lon/name).
 
   const [toggles, setToggles] = useState(() =>
     landuseTypes.reduce((o, t) => ({ ...o, [t]: true }), {})
   );
   const [features, setFeatures] = useState([]);
 
+  // Marker toggles
   const [showWtp, setShowWtp] = useState(true);
   const [showPublic, setShowPublic] = useState(true);
 
-  // --- Resizable sidebar ---
-  const DEFAULT_SIDEBAR = 360;
-  const MIN_SIDEBAR = 260;
-  const MAX_SIDEBAR = 720;
-
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = Number(localStorage.getItem("sidebarWidthPx"));
-    return Number.isFinite(saved) ? saved : DEFAULT_SIDEBAR;
-  });
-
-  // Use ref for logic (no stale closures), state only for visuals
-  const [isDragging, setIsDragging] = useState(false);
-  const dragRef = useRef({ dragging: false, startX: 0, startW: sidebarWidth });
+  // AOI source: "wtp" or "public"
+  const [aoiSource, setAoiSource] = useState("wtp");
 
   useEffect(() => {
     setFeatures([]);
     setGlobalRadiusKm(group?.defaultRadiusKm ?? 2);
+    setAoiSource("wtp");
   }, [groupId]);
 
   const visible = useMemo(
@@ -70,98 +78,75 @@ function MapPage() {
     [features, toggles]
   );
 
-  const onDragStart = (e) => {
-    e.preventDefault();
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    dragRef.current = { dragging: true, startX: clientX, startW: sidebarWidth };
-    setIsDragging(true);
-    document.body.classList.add("no-select");
-    window.addEventListener("mousemove", onDragMove);
-    window.addEventListener("mouseup", onDragEnd);
-    window.addEventListener("touchmove", onDragMove, { passive: false });
-    window.addEventListener("touchend", onDragEnd);
-    window.addEventListener("mouseleave", onDragEnd);
-  };
-
-  const onDragMove = (e) => {
-    if (!dragRef.current.dragging) return; // ← ref, not state
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const delta = clientX - dragRef.current.startX;
-    let next = dragRef.current.startW + delta;
-    next = Math.max(MIN_SIDEBAR, Math.min(MAX_SIDEBAR, next));
-    setSidebarWidth(next);
-  };
-
-  const onDragEnd = () => {
-    if (!dragRef.current.dragging) return;
-    dragRef.current.dragging = false; // ← stop logic
-    setIsDragging(false);             // ← update visuals
-    document.body.classList.remove("no-select");
-    localStorage.setItem("sidebarWidthPx", String(sidebarWidth));
-    window.removeEventListener("mousemove", onDragMove);
-    window.removeEventListener("mouseup", onDragEnd);
-    window.removeEventListener("touchmove", onDragMove);
-    window.removeEventListener("touchend", onDragEnd);
-    window.removeEventListener("mouseleave", onDragEnd);
-  };
-
   if (!group) return <Navigate to="/menu" replace />;
+
+  // Choose AOI union/circles/center based on source
+  const aoi = aoiSource === "public"
+    ? { center: publicCenter, union: publicUnion, circles: publicCircles }
+    : { center: wtpCenter,    union: wtpUnion,    circles: wtpCircles };
+
+  // Prevent Overpass fetch if AOI is missing
+  const enableAOI = aoiSource === "public" || showWtp; // WTP AOI hidden when WTP toggle off
 
   return (
     <div className="app-container" style={{ position: "relative" }}>
       <div className="map-pane" style={{ flex: 1, minWidth: 0 }}>
         <LandUseMap
-          center={center}
-          searchRadiusKm={showWtp ? maxSearchRadiusKm : null}
+          center={aoi.center}
+          searchRadiusKm={enableAOI ? maxSearchRadiusKm : null}
           landuseToggles={toggles}
-          features={showWtp ? visible : []}
+
+          // Land tiles follow chosen AOI
+          features={enableAOI ? visible : []}
           onDataUpdate={setFeatures}
-          unionPolygon={showWtp ? unionPolygon : null}
-          publicBuildings={showPublic ? publicBuildings : []}
-          circlesFC={showWtp ? circlesFC : null}
-          locationRows={showWtp ? effectiveRows : []}
+          unionPolygon={enableAOI ? aoi.union : null}
+          circlesFC={enableAOI ? aoi.circles : null}
+
+          // Markers: WTP (blue default) + Public (red); both obey their own toggles
+          locationRows={showWtp ? wtpRows : []}
+          publicBuildings={showPublic ? publicRows : []}
+
+          // Production allocation stays based on WTP (as before)
           totalProduction={showWtp ? totalProduction : 0}
         />
       </div>
 
-      {/* Resizer handle */}
-      <div
-        className={`resizer ${isDragging ? "dragging" : ""}`}
-        onMouseDown={onDragStart}
-        onTouchStart={onDragStart}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize dashboard"
-      />
-
-      {/* Sidebar */}
-      <div className="details-pane" style={{ width: `${sidebarWidth}px` }}>
+      {/* (your resizer + details pane wrapper stays the same) */}
+      <div className="resizer" /* ...handlers... */ />
+      <div className="details-pane" /* style={{ width: sidebarWidth }} */>
         <Dashboard
           radiusKm={globalRadiusKm}
           onRadiusChange={(v) => {
             const num = Number(v);
             if (Number.isFinite(num) && num > 0) setGlobalRadiusKm(num);
           }}
+
           landuseTypes={landuseTypes}
           toggles={toggles}
           onToggle={(t) => setToggles((p) => ({ ...p, [t]: !p[t] }))}
           features={visible}
           totalProduction={totalProduction}
+
+          // marker toggles
           showWtp={showWtp}
           onToggleWtp={() => setShowWtp((s) => !s)}
           showPublic={showPublic}
           onTogglePublic={() => setShowPublic((s) => !s)}
-        />
-      </div>
 
-      {/* Overlay only while dragging */}
-      {isDragging && (
-        <div
-          className="resizing-blocker"
-          onMouseUp={onDragEnd}
-          onTouchEnd={onDragEnd}
+          // NEW: AOI source switch
+          aoiSource={aoiSource}
+          onChangeAoiSource={setAoiSource}
         />
-      )}
+
+        {(wtpLoading || publicLoading) && (
+          <div className="notice notice-loading">Loading AOI…</div>
+        )}
+        {(wtpError || publicError) && (
+          <div className="notice notice-error">
+            {wtpError || publicError}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -14,8 +14,27 @@ import area from "@turf/area";
 import * as turf from "@turf/turf";
 import "leaflet/dist/leaflet.css";
 
-// Keep in sync with hook or centralize
-const LITERS_PER_PE_PER_YEAR = 500;
+/* ---------------- Icons: same dot style, different colors ---------------- */
+function createColoredDotIcon(hex = "#d93025") {
+  const svg = encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+      <circle cx="12" cy="12" r="6" fill="${hex}" stroke="white" stroke-width="2"/>
+    </svg>`
+  );
+  return L.icon({
+    iconUrl: `data:image/svg+xml;charset=UTF-8,${svg}`,
+    iconRetinaUrl: `data:image/svg+xml;charset=UTF-8,${svg}`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -10],
+    className: ""
+  });
+}
+const blueDotIcon = createColoredDotIcon("#1967d2"); // WTPs (blue)
+const redDotIcon  = createColoredDotIcon("#d93025"); // Public buildings (red)
+
+/* ---------------- Constants kept from your setup ---------------- */
+const LITERS_PER_PE_PER_YEAR = 500; // for per-site popup calc
 const PRODUCTION_RATIO = 7 / 100;
 
 const LANDUSE_COLORS = {
@@ -26,6 +45,7 @@ const LANDUSE_COLORS = {
   greenhouse_horticulture: "#00CED1",
 };
 
+/* ---------------- Overpass helpers (cache + retry/rotate) ---------------- */
 const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
@@ -59,6 +79,7 @@ async function fetchOverpassWithBackoff(query, abortSignal, cacheKey) {
   throw new Error("Overpass failed after multiple retries");
 }
 
+/* ---------------- Component ---------------- */
 export default function LandUseMap({
   center,
   searchRadiusKm,
@@ -73,23 +94,7 @@ export default function LandUseMap({
 }) {
   const abortRef = useRef(null);
 
-  // Red dot icon for public buildings
-  const redDotIcon = useMemo(
-    () =>
-      L.divIcon({
-        className: "custom-red-marker",
-        html: `<div style="
-          width: 14px; height: 14px;
-          background:#e02424; border-radius:50%;
-          border:2px solid #fff; box-shadow:0 0 2px rgba(0,0,0,0.6);
-        "></div>`,
-        iconSize: [14, 14],
-        iconAnchor: [7, 7],
-      }),
-    []
-  );
-
-  // Signature strings for cache keys and force-remount keys
+  // Signatures to bust stale caches/force remount when geometry changes
   const unionSig = useMemo(() => {
     try {
       if (!unionPolygon) return "union-none";
@@ -114,7 +119,7 @@ export default function LandUseMap({
   useEffect(() => {
     if (!center || !searchRadiusKm || !unionPolygon) return;
 
-    // Tight bbox around union
+    // Tight bbox around union; fallback to center+radius if needed
     let bbox;
     try {
       bbox = turf.bbox(unionPolygon);
@@ -134,10 +139,9 @@ export default function LandUseMap({
       out body geom;
     `;
 
-    // Include union signature in cache key to avoid stale fetch reuse
-    const cacheKey = `${minLon.toFixed(6)},${minLat.toFixed(6)},${maxLon.toFixed(
-      6
-    )},${maxLat.toFixed(6)}|${tags}|${unionSig}`;
+    // Include union signature in cache key to avoid stale reuse
+    const cacheKey =
+      `${minLon.toFixed(6)},${minLat.toFixed(6)},${maxLon.toFixed(6)},${maxLat.toFixed(6)}|${tags}|${unionSig}`;
 
     const debounceMs = 650 + Math.random() * 200;
     const timer = setTimeout(async () => {
@@ -181,6 +185,7 @@ export default function LandUseMap({
             return null;
           }
 
+          // Non-FC region
           try {
             if (turf.booleanIntersects(tf, region)) {
               const inter = turf.intersect(tf, region);
@@ -211,8 +216,7 @@ export default function LandUseMap({
             if (
               inter.geometry?.type !== "Polygon" &&
               inter.geometry?.type !== "MultiPolygon"
-            )
-              continue;
+            ) continue;
             const a = area(inter);
             if (a > 0) {
               inter.properties = { ...inter.properties, landuse: sourceLanduse, area: a };
@@ -242,8 +246,6 @@ export default function LandUseMap({
   // Keys to force GeoJSON remounts
   const unionKey = useMemo(() => `union-${unionSig}`, [unionSig]);
   const circlesKey = useMemo(() => `circles-${circlesSig}`, [circlesSig]);
-
-  // NEW: featuresKey to force land-use layer remount when features change
   const featuresKey = useMemo(() => {
     if (!features?.length) return "features-none";
     try {
@@ -301,21 +303,29 @@ export default function LandUseMap({
       {/* Original circles */}
       {circlesFC &&
         circlesFC.features?.map((c, i) => (
-          <GeoJSON key={`${circlesKey}-${i}`} data={c} style={{ color: "#666", weight: 1, fillOpacity: 0.08 }} />
+          <GeoJSON
+            key={`${circlesKey}-${i}`}
+            data={c}
+            style={{ color: "#666", weight: 1, fillOpacity: 0.08 }}
+          />
         ))}
 
       {/* Union polygon */}
       {unionPolygon && (
-        <GeoJSON key={unionKey} data={unionPolygon} style={{ color: "#333", weight: 2, fillOpacity: 0.1 }} />
+        <GeoJSON
+          key={unionKey}
+          data={unionPolygon}
+          style={{ color: "#333", weight: 2, fillOpacity: 0.1 }}
+        />
       )}
 
-      {/* WTP markers (respect toggle via parent passing [] when off) */}
+      {/* WTP markers — BLUE dot markers */}
       {locationRows?.map((pt, i) => {
         const pe = Number(pt.peValue || 0);
         const perSiteUrine = pe * LITERS_PER_PE_PER_YEAR;
         const perSiteProd  = perSiteUrine * PRODUCTION_RATIO;
         return (
-          <Marker key={`wtp-${i}`} position={[pt.lat, pt.lon]}>
+          <Marker key={`wtp-${i}`} position={[pt.lat, pt.lon]} icon={blueDotIcon}>
             <Popup>
               <div style={{ minWidth: 220 }}>
                 <strong>{pt.name || `Location ${i + 1}`}</strong>
@@ -341,7 +351,7 @@ export default function LandUseMap({
         );
       })}
 
-      {/* Land‐use overlays (force remount via featuresKey) */}
+      {/* Land‐use overlays */}
       {features?.length > 0 && (
         <GeoJSON
           key={featuresKey}
@@ -351,13 +361,16 @@ export default function LandUseMap({
         />
       )}
 
-      {/* Public buildings — red markers (parent passes [] when off) */}
+      {/* Public buildings — RED dot markers */}
       {publicBuildings?.map((p, i) => (
         <Marker key={`pb-${i}`} position={[p.lat, p.lon]} icon={redDotIcon}>
           <Popup>
             <strong>{p.name || "Public Building"}</strong>
             <div>{p.lat?.toFixed?.(5)}, {p.lon?.toFixed?.(5)}</div>
-            <div>Yearly presence/capacity: {p.waste != null && Number.isFinite(p.waste) ? p.waste : "N/A"}</div>
+            <div>
+              Yearly presence/capacity:{" "}
+              {p.waste != null && Number.isFinite(p.waste) ? p.waste : "N/A"}
+            </div>
           </Popup>
         </Marker>
       ))}

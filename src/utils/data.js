@@ -2,16 +2,16 @@
 export const LOCATION_GROUPS = [
   {
     id: "attica",
-    label: "WTP — Attica",
+    name: "Attica",
     csv: "/locations/wtp-attica.csv",
-    defaultRadiusKm: 10, // ⬅️ start at 10 km
+    publicCsv: "/locations/public-attica.csv",   // ← add this
+    defaultRadiusKm: 2
   },
   {
     id: "campania",
-    label: "WTP — Campania",
+    name: "Campania",
     csv: "/locations/wtp-campania.csv",
-    defaultRadiusKm: 10, // ⬅️ start at 10 km
-  },
+    publicCsv: "/locations/public-campania.csv", // ← and this
+    defaultRadiusKm: 2
+  }
 ];
-
-export const PUBLIC_BUILDINGS_CSV = "/public-buildings.csv";
